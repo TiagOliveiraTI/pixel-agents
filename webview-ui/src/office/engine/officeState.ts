@@ -10,6 +10,7 @@ import {
   HUE_SHIFT_RANGE_DEG,
   INACTIVE_SEAT_TIMER_MIN_SEC,
   INACTIVE_SEAT_TIMER_RANGE_SEC,
+  PALETTE_COUNT,
   WAITING_BUBBLE_DURATION_SEC,
 } from '../../constants.js';
 import { getAnimationFrames, getCatalogEntry, getOnStateType } from '../layout/furnitureCatalog.js';
@@ -244,10 +245,11 @@ export class OfficeState {
    * Pick a diverse palette for a new agent based on currently active agents.
    * First 6 agents each get a unique skin (random order). Beyond 6, skins
    * repeat in balanced rounds with a random hue shift (≥45°).
+   * Palette 6+ is reserved for special characters (owner).
    */
   private pickDiversePalette(): { palette: number; hueShift: number } {
-    // Count how many non-sub-agents use each base palette (0-5)
-    const paletteCount = getLoadedCharacterCount();
+    // Use PALETTE_COUNT (6) — palette 6 is reserved for the owner (Tiago)
+    const paletteCount = Math.min(PALETTE_COUNT, getLoadedCharacterCount());
     const counts = new Array(paletteCount).fill(0) as number[];
     for (const ch of this.characters.values()) {
       if (ch.isSubagent) continue;
