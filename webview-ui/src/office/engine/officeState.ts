@@ -10,6 +10,7 @@ import {
   HUE_SHIFT_RANGE_DEG,
   INACTIVE_SEAT_TIMER_MIN_SEC,
   INACTIVE_SEAT_TIMER_RANGE_SEC,
+  PALETTE_COUNT,
   WAITING_BUBBLE_DURATION_SEC,
 } from '../../constants.js';
 import { getAnimationFrames, getCatalogEntry, getOnStateType } from '../layout/furnitureCatalog.js';
@@ -53,6 +54,8 @@ export class OfficeState {
   /** Reverse lookup: sub-agent character ID → parent info */
   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string }> = new Map();
   private nextSubagentId = -1;
+  /** Owner character ID, or null if not spawned */
+  ownerCharId: number | null = null;
 
   constructor(layout?: OfficeLayout) {
     this.layout = layout || createDefaultLayout();
@@ -177,6 +180,11 @@ export class OfficeState {
   private findFreeSeat(): string | null {
     // Build set of tiles occupied by electronics (PCs, monitors, etc.)
     const electronicsTiles = new Set<string>();
+
+    // Get owner's seat so regular agents never take it
+    const ownerSeatId =
+      this.ownerCharId !== null ? (this.characters.get(this.ownerCharId)?.seatId ?? null) : null;
+
     for (const item of this.layout.furniture) {
       const entry = getCatalogEntry(item.type);
       if (!entry || entry.category !== 'electronics') continue;
@@ -192,6 +200,7 @@ export class OfficeState {
     const otherSeats: string[] = [];
     for (const [uid, seat] of this.seats) {
       if (seat.assigned) continue;
+      if (uid === ownerSeatId) continue; // reserved for owner
 
       // Check if this seat faces electronics (same logic as auto-state detection)
       let facesPC = false;
@@ -236,10 +245,11 @@ export class OfficeState {
    * Pick a diverse palette for a new agent based on currently active agents.
    * First 6 agents each get a unique skin (random order). Beyond 6, skins
    * repeat in balanced rounds with a random hue shift (≥45°).
+   * Palette 6+ is reserved for special characters (owner).
    */
   private pickDiversePalette(): { palette: number; hueShift: number } {
-    // Count how many non-sub-agents use each base palette (0-5)
-    const paletteCount = getLoadedCharacterCount();
+    // Use PALETTE_COUNT (6) — palette 6 is reserved for the owner (Tiago)
+    const paletteCount = Math.min(PALETTE_COUNT, getLoadedCharacterCount());
     const counts = new Array(paletteCount).fill(0) as number[];
     for (const ch of this.characters.values()) {
       if (ch.isSubagent) continue;
@@ -258,6 +268,36 @@ export class OfficeState {
       hueShift = HUE_SHIFT_MIN_DEG + Math.floor(Math.random() * HUE_SHIFT_RANGE_DEG);
     }
     return { palette, hueShift };
+  }
+
+  static readonly OWNER_ID = -9999;
+
+  /** Spawn the owner character (Tiago). Uses palette 6 (char_6.png). */
+  addOwner(): void {
+    if (this.ownerCharId !== null) return; // already present
+    const seatId = this.findFreeSeat();
+    const palette = 6; // Tiago's dedicated sprite
+    let ch: Character;
+    if (seatId) {
+      const seat = this.seats.get(seatId)!;
+      seat.assigned = true;
+      ch = createCharacter(OfficeState.OWNER_ID, palette, seatId, seat, 0);
+    } else {
+      const spawn =
+        this.walkableTiles.length > 0
+          ? this.walkableTiles[Math.floor(Math.random() * this.walkableTiles.length)]
+          : { col: 1, row: 1 };
+      ch = createCharacter(OfficeState.OWNER_ID, palette, null, null, 0);
+      ch.x = spawn.col * TILE_SIZE + TILE_SIZE / 2;
+      ch.y = spawn.row * TILE_SIZE + TILE_SIZE / 2;
+      ch.tileCol = spawn.col;
+      ch.tileRow = spawn.row;
+    }
+    ch.isOwner = true;
+    ch.isActive = true;
+    ch.state = CharacterState.TYPE;
+    this.characters.set(OfficeState.OWNER_ID, ch);
+    this.ownerCharId = OfficeState.OWNER_ID;
   }
 
   addAgent(
@@ -653,6 +693,43 @@ export class OfficeState {
     if (ch) {
       ch.bubbleType = 'permission';
       ch.bubbleTimer = 0;
+
+      // Walk agent to a tile adjacent to the owner's desk
+      if (this.ownerCharId !== null) {
+        const owner = this.characters.get(this.ownerCharId);
+        if (owner && owner.seatId) {
+          const ownerSeat = this.seats.get(owner.seatId);
+          if (ownerSeat) {
+            const candidates = [
+              { col: ownerSeat.seatCol - 1, row: ownerSeat.seatRow },
+              { col: ownerSeat.seatCol + 1, row: ownerSeat.seatRow },
+              { col: ownerSeat.seatCol, row: ownerSeat.seatRow - 1 },
+              { col: ownerSeat.seatCol, row: ownerSeat.seatRow + 1 },
+            ];
+            for (const target of candidates) {
+              if (!isWalkable(target.col, target.row, this.tileMap, this.blockedTiles)) continue;
+              const path = this.withOwnSeatUnblocked(ch, () =>
+                findPath(
+                  ch.tileCol,
+                  ch.tileRow,
+                  target.col,
+                  target.row,
+                  this.tileMap,
+                  this.blockedTiles,
+                ),
+              );
+              if (path.length > 0) {
+                ch.path = path;
+                ch.moveProgress = 0;
+                ch.state = CharacterState.WALK;
+                ch.frame = 0;
+                ch.frameTimer = 0;
+                break;
+              }
+            }
+          }
+        }
+      }
     }
   }
 

@@ -71,7 +71,7 @@ interface ExtensionMessageState {
 function saveAgentSeats(os: OfficeState): void {
   const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
   for (const ch of os.characters.values()) {
-    if (ch.isSubagent) continue;
+    if (ch.isSubagent || ch.isOwner) continue;
     seats[ch.id] = { palette: ch.palette, hueShift: ch.hueShift, seatId: ch.seatId };
   }
   vscode.postMessage({ type: 'saveAgentSeats', seats });
@@ -141,6 +141,8 @@ export function useExtensionMessages(
           os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
         }
         pendingAgents = [];
+        // Spawn owner character (Tiago) — always present
+        os.addOwner();
         layoutReadyRef.current = true;
         setLayoutReady(true);
         if (msg.wasReset) {
